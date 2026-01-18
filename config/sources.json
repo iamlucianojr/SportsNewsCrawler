@@ -1,0 +1,12 @@
+[
+    {
+        "name": "ecb-pulselive",
+        "url": "https://content-ecb.pulselive.com/content/ecb/text/EN/?pageSize=20",
+        "transformer": "pulselive"
+    },
+    {
+        "name": "dummy-source",
+        "url": "http://mock-feed:8081/feed",
+        "transformer": "dummy"
+    }
+]

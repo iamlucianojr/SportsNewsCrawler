@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: news-crawler
+  namespace: sports-news-crawler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: news-crawler
+  template:
+    metadata:
+      labels:
+        app: news-crawler
+    spec:
+      containers:
+      - name: news-crawler
+        image: lucianojr/news_crawler:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+        envFrom:
+        - configMapRef:
+            name: news-crawler-config
+        - secretRef:
+            name: news-crawler-secrets
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: news-crawler-service
+  namespace: sports-news-crawler
+spec:
+  type: NodePort # Expose for testing/demo. In prod use ClusterIP + Ingress
+  ports:
+  - port: 8080
+    targetPort: 8080
+    nodePort: 30080
+  selector:
+    app: news-crawler

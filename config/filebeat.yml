@@ -1,0 +1,38 @@
+filebeat.inputs:
+  - type: container
+    enabled: true
+    paths:
+      - '/var/lib/docker/containers/*/*.log'
+    processors:
+      - add_docker_metadata:
+          host: "unix:///var/run/docker.sock"
+      - decode_json_fields:
+          fields: ["message"]
+          target: ""
+          overwrite_keys: true
+          add_error_key: true
+      - add_fields:
+          target: ''
+          fields:
+            environment: local
+            application: sports-news-crawler
+
+output.elasticsearch:
+  hosts: ["elasticsearch:9200"]
+  index: "sportsnewscrawler-%{+yyyy.MM.dd}"
+
+# Disable Kibana setup to avoid connection errors
+setup.kibana.enabled: false
+setup.dashboards.enabled: false
+
+# Configure index template
+setup.template.name: "sportsnewscrawler"
+setup.template.pattern: "sportsnewscrawler-*"
+setup.template.settings:
+  index.number_of_shards: 1
+  index.number_of_replicas: 0
+
+# Logging
+logging.level: info
+logging.to_files: false
+logging.to_syslog: false

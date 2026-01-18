@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: news-crawler-config
+  namespace: sports-news-crawler
+data:
+  SERVER_PORT: "8080"
+  MONGO_DB_NAME: "news_crawler"
+  MONGO_COLLECTION: "articles"
+  POLL_INTERVAL: "1m"
+  BATCH_SIZE: "20"
+  WORKER_POOL_SIZE: "10"
+  KAFKA_BROKERS: "kafka-service:9092"
+  KAFKA_TOPIC: "news_articles"
+  KAFKA_DLQ_TOPIC: "news_articles_dlq"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "jaeger-service:4317"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: news-crawler-secrets
+  namespace: sports-news-crawler
+type: Opaque
+data:
+  # Base64 encoded values. Example: echo -n "mongodb://mongo-service:27017" | base64
+  # bW9uZ29RiOi8vbW9uZy1zZXJ2aWNlOjI3MDE3
+  MONGO_URI: bW9uZ29RiOi8vbW9uZy1zZXJ2aWNlOjI3MDE3 # placeholder

@@ -1,0 +1,43 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'dev'
+    environment: 'local'
+
+# Alerting configuration (optional)
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ['alertmanager:9093']
+
+# Load rules once and periodically evaluate them
+rule_files:
+  - "alerts/*.yml"
+
+scrape_configs:
+  # Main application metrics
+  - job_name: 'news-crawler'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['app:8080']
+        labels:
+          service: 'news-crawler'
+          component: 'backend'
+    
+  # Mock feed service
+  - job_name: 'mock-feed'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['mock-feed:8081']
+        labels:
+          service: 'mock-feed'
+          component: 'test'
+  
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus'
+          component: 'monitoring'

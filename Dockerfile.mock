@@ -1,0 +1,15 @@
+FROM golang:1.24-alpine
+
+WORKDIR /app
+
+COPY . .
+RUN go build -o mock-feed ./cmd/mock-feed
+
+# Create a non-root user
+RUN adduser -D -g '' appuser
+
+EXPOSE 8081
+
+USER appuser
+
+CMD ["./mock-feed"]

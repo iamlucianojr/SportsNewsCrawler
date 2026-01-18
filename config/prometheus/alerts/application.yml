@@ -1,0 +1,69 @@
+groups:
+  - name: application_alerts
+    interval: 30s
+    rules:
+      # High error rate alert
+      - alert: HighErrorRate
+        expr: rate(articles_ingested_total{status=~"error.*"}[5m]) > 0.16
+        for: 2m
+        labels:
+          severity: warning
+          component: crawler
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is {{ $value | humanize }} errors/sec for {{ $labels.provider }}"
+
+      # No articles processed
+      - alert: NoArticlesProcessed
+        expr: rate(articles_ingested_total[5m]) == 0
+        for: 5m
+        labels:
+          severity: warning
+          component: crawler
+        annotations:
+          summary: "No articles being processed"
+          description: "No articles have been ingested in the last 5 minutes"
+
+      # Kafka connection issues
+      - alert: KafkaConnectionDown
+        expr: up{job="kafka"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: kafka
+        annotations:
+          summary: "Kafka connection down"
+          description: "Cannot connect to Kafka broker"
+
+      # Circuit breaker open
+      - alert: CircuitBreakerOpen
+        expr: circuit_breaker_state{service="kafka"} == 1
+        for: 2m
+        labels:
+          severity: warning
+          component: kafka
+        annotations:
+          summary: "Circuit breaker open for {{ $labels.service }}"
+          description: "Circuit breaker has been open for 2 minutes"
+
+      # High provider fetch duration
+      - alert: SlowProviderFetch
+        expr: histogram_quantile(0.95, rate(provider_fetch_duration_seconds_bucket[5m])) > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: crawler
+        annotations:
+          summary: "Slow provider fetch detected"
+          description: "95th percentile fetch duration is {{ $value | humanize }}s for {{ $labels.provider }}"
+
+      # Service down
+      - alert: ServiceDown
+        expr: up{job="news-crawler"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: crawler
+        annotations:
+          summary: "News crawler service is down"
+          description: "The news crawler service has been down for 1 minute"
