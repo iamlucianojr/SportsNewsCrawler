@@ -27,13 +27,25 @@ func main() {
 			// Infrastructure
 			factory.NewMongoClient,
 			factory.NewMongoRepository,
-			factory.NewMainKafkaProducer,
-			factory.NewDLQProducer,
-			factory.NewKafkaConsumer,
+			fx.Annotate(
+				factory.NewMainKafkaProducer,
+				fx.ResultTags(`name:"main_producer"`),
+			),
+			fx.Annotate(
+				factory.NewDLQProducer,
+				fx.ResultTags(`name:"dlq_producer"`),
+			),
+			fx.Annotate(
+				factory.NewKafkaConsumer,
+				fx.ParamTags(``, `name:"dlq_producer"`, ``),
+			),
 
 			// Gateways & Producers
 			factory.NewCMSGateway,
-			factory.NewEventProducer,
+			fx.Annotate(
+				factory.NewEventProducer,
+				fx.ParamTags(`name:"main_producer"`),
+			),
 
 			// Providers
 			factory.NewProviders,

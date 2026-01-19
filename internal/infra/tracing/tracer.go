@@ -3,6 +3,8 @@ package tracing
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"os"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
@@ -14,9 +16,17 @@ import (
 
 // InitTracer initializes the OpenTelemetry tracer provider.
 func InitTracer(ctx context.Context, serviceName string) (func(context.Context) error, error) {
-	// 1. Create OTLP via gRPC exporter (relies on OTEL_EXPORTER_OTLP_ENDPOINT)
-	// Default endpoint is localhost:4317
-	exporter, err := otlptracegrpc.New(ctx)
+	endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	if endpoint == "" {
+		endpoint = "localhost:4317" // Default
+	}
+	slog.Info("Initializing tracer", "service", serviceName, "endpoint", endpoint)
+
+	// 1. Create OTLP via gRPC exporter
+	exporter, err := otlptracegrpc.New(ctx,
+		otlptracegrpc.WithInsecure(),
+		otlptracegrpc.WithEndpoint(endpoint),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create trace exporter: %w", err)
 	}
