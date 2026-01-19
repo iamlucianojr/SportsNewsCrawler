@@ -1,4 +1,4 @@
-.PHONY: help build test lint fmt vet clean run docker-build docker-up docker-down docker-logs k8s-deploy k8s-delete coverage
+.PHONY: help build test lint fmt vet clean run docker-build docker-up docker-down docker-logs coverage
 
 # Default target
 help: ## Show this help message
@@ -100,34 +100,6 @@ docker-clean: ## Remove all containers, volumes, and images
 	@echo "Cleaning Docker resources..."
 	docker-compose down -v
 	docker system prune -f
-
-# Kubernetes targets
-k8s-deploy: ## Deploy to Kubernetes
-	@echo "Deploying to Kubernetes..."
-	kubectl apply -f k8s/namespace.yaml
-	kubectl apply -f k8s/config.yaml
-	kubectl apply -f k8s/mongodb.yaml
-	kubectl apply -f k8s/kafka.yaml
-	kubectl apply -f k8s/jaeger.yaml
-	kubectl apply -f k8s/app.yaml
-
-k8s-delete: ## Delete Kubernetes resources
-	@echo "Deleting Kubernetes resources..."
-	kubectl delete -f k8s/app.yaml --ignore-not-found
-	kubectl delete -f k8s/jaeger.yaml --ignore-not-found
-	kubectl delete -f k8s/kafka.yaml --ignore-not-found
-	kubectl delete -f k8s/mongodb.yaml --ignore-not-found
-	kubectl delete -f k8s/config.yaml --ignore-not-found
-	kubectl delete -f k8s/namespace.yaml --ignore-not-found
-
-k8s-logs: ## Show application logs from Kubernetes
-	kubectl logs -n sports-news-crawler -l app=news-crawler -f
-
-k8s-status: ## Show Kubernetes deployment status
-	kubectl get all -n sports-news-crawler
-
-k8s-restart: ## Restart Kubernetes deployment
-	kubectl rollout restart deployment/news-crawler -n sports-news-crawler
 
 # Development targets
 dev: docker-up ## Start development environment
