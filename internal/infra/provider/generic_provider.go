@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/SportsNewsCrawler/internal/domain"
+	"github.com/SportsNewsCrawler/internal/infra/metrics"
 	"github.com/SportsNewsCrawler/pkg/config"
 	"github.com/sony/gobreaker"
 )
@@ -34,6 +35,24 @@ func NewGenericProvider(name, url string, transformer domain.Transformer, pagina
 		},
 		OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
 			slog.Warn("CircuitBreaker state changed", "name", name, "from", from, "to", to)
+			var stateVal float64
+			switch to {
+			case gobreaker.StateClosed:
+				stateVal = 0
+			case gobreaker.StateHalfOpen:
+				stateVal = 1
+			case gobreaker.StateOpen:
+				stateVal = 2
+			}
+			// Use the global metrics package.
+			// Note: This creates a tight coupling to the global metrics package which is fine for this app
+			// but explicitly passing a metrics recorder would be cleaner for libraries.
+			// Since we can't easily change the constructor signature to accept one without breaking changes,
+			// we are importing metrics directly here.
+			// However, we need to import "github.com/SportsNewsCrawler/internal/infra/metrics"
+			// which might cause an import cycle if not careful (provider -> metrics).
+			// Let's check imports. metrics package has no deps, so it's safe.
+			metrics.CircuitBreakerState.WithLabelValues(name).Set(stateVal)
 		},
 	}
 
@@ -223,6 +242,9 @@ func (p *GenericProvider) fetchSinglePage(ctx context.Context, url string, page 
 	// Transform
 	articles, pageInfo, err := p.transformer.Transform(body)
 	if err != nil {
+		// Record parse error
+		// We need to import the metrics package
+		metrics.ParseErrors.WithLabelValues(p.name).Inc()
 		return nil, nil, fmt.Errorf("failed to transform articles from %s: %w", p.name, err)
 	}
 

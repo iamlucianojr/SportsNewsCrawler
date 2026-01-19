@@ -204,8 +204,18 @@ func (s *NewsCrawlerService) processBatch(ctx context.Context, provider domain.P
 		metrics.ArticlesDuplicatesSkipped.WithLabelValues(provider.GetName()).Add(float64(skippedCount))
 	}
 
-	metrics.IngestionDuration.WithLabelValues(provider.GetName()).Observe(time.Since(start).Seconds())
+	metrics.ProviderFetchDuration.WithLabelValues(provider.GetName()).Observe(time.Since(start).Seconds())
 	metrics.ArticlesIngested.WithLabelValues(provider.GetName(), "success").Add(float64(len(articles)))
+	// Initialize published metrics to ensure they appear in Grafana even if 0
+	metrics.ArticlesPublished.WithLabelValues(provider.GetName()).Add(0)
+	metrics.PublishErrors.WithLabelValues(provider.GetName()).Add(0)
+
+	// Track freshness
+	for _, a := range articles {
+		if !a.PublishedAt.IsZero() {
+			metrics.ArticleFreshness.WithLabelValues(provider.GetName()).Observe(time.Since(a.PublishedAt).Seconds())
+		}
+	}
 
 	// 4. Bulk Upsert
 	if err := s.repo.BulkUpsert(ctx, articles); err != nil {
@@ -215,9 +225,17 @@ func (s *NewsCrawlerService) processBatch(ctx context.Context, provider domain.P
 	// 5. Publish Changed
 	if len(changedArticles) > 0 {
 		slog.Info("Publishing changed articles", "count", len(changedArticles), "provider", provider.GetName())
-		if err := s.eventProducer.PublishBatch(ctx, changedArticles); err != nil {
+
+		pubStart := time.Now()
+		err := s.eventProducer.PublishBatch(ctx, changedArticles)
+		metrics.PublishDuration.WithLabelValues(provider.GetName()).Observe(time.Since(pubStart).Seconds())
+
+		if err != nil {
 			slog.Error("Error publishing article batch", "count", len(changedArticles), "error", err)
+			metrics.PublishErrors.WithLabelValues(provider.GetName()).Inc()
 			// Continue even if publish fails, data is in DB
+		} else {
+			metrics.ArticlesPublished.WithLabelValues(provider.GetName()).Add(float64(len(changedArticles)))
 		}
 	}
 

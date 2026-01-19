@@ -22,10 +22,10 @@ var (
 		[]string{"source"},
 	)
 
-	IngestionDuration = promauto.NewHistogramVec(
+	ProviderFetchDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
-			Name:    "ingestion_duration_seconds",
-			Help:    "Duration of ingestion cycles",
+			Name:    "provider_fetch_duration_seconds",
+			Help:    "Duration of fetch cycles from providers",
 			Buckets: prometheus.DefBuckets,
 		},
 		[]string{"source"},
@@ -36,6 +36,31 @@ var (
 			Name: "worker_active_count",
 			Help: "Number of workers currently processing jobs",
 		},
+	)
+
+	ArticlesPublished = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "articles_published_total",
+			Help: "Total number of articles successfully published to Kafka",
+		},
+		[]string{"source"},
+	)
+
+	PublishDuration = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "publish_duration_seconds",
+			Help:    "Duration of publishing to Kafka",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"source"},
+	)
+
+	PublishErrors = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "publish_errors_total",
+			Help: "Total number of errors while publishing to Kafka",
+		},
+		[]string{"source"},
 	)
 
 	DLQMessagesPublished = promauto.NewCounterVec(
@@ -66,6 +91,30 @@ var (
 		prometheus.CounterOpts{
 			Name: "cms_articles_processed_total",
 			Help: "Total number of articles successfully synced to CMS",
+		},
+		[]string{"source"},
+	)
+	ArticleFreshness = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "article_freshness_seconds",
+			Help:    "Time since article publication when ingested",
+			Buckets: []float64{60, 300, 600, 1800, 3600, 7200, 21600, 86400}, // 1m, 5m, 10m, 30m, 1h, 2h, 6h, 24h
+		},
+		[]string{"source"},
+	)
+
+	CircuitBreakerState = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "circuit_breaker_state",
+			Help: "State of the circuit breaker (0=Closed, 1=Half-Open, 2=Open)",
+		},
+		[]string{"source"},
+	)
+
+	ParseErrors = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "article_parse_errors_total",
+			Help: "Total number of errors during article parsing/transformation",
 		},
 		[]string{"source"},
 	)
