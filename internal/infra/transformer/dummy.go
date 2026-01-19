@@ -27,10 +27,10 @@ type DummyResponse struct {
 	Items []DummyArticle `json:"items"`
 }
 
-func (t *DummyTransformer) Transform(reader io.Reader) ([]domain.Article, error) {
+func (t *DummyTransformer) Transform(reader io.Reader) ([]domain.Article, *domain.PageInfo, error) {
 	var resp DummyResponse
 	if err := json.NewDecoder(reader).Decode(&resp); err != nil {
-		return nil, fmt.Errorf("failed to decode dummy response: %w", err)
+		return nil, nil, fmt.Errorf("failed to decode dummy response: %w", err)
 	}
 
 	articles := make([]domain.Article, 0, len(resp.Items))
@@ -48,5 +48,14 @@ func (t *DummyTransformer) Transform(reader io.Reader) ([]domain.Article, error)
 			URL:         "http://dummy/" + item.ID,
 		})
 	}
-	return articles, nil
+
+	// Mock PageInfo for pagination testing
+	pageInfo := &domain.PageInfo{
+		Page:       0,
+		NumPages:   1, // Only 1 page for dummy
+		PageSize:   20,
+		NumEntries: len(articles),
+	}
+
+	return articles, pageInfo, nil
 }

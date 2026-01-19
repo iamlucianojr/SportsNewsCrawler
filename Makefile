@@ -22,6 +22,14 @@ install: ## Install dependencies
 	go mod download
 	go mod tidy
 
+init-env: ## Create .env from .env.example
+	@if [ -f .env ]; then \
+		echo ".env already exists, skipping..."; \
+	else \
+		echo "Creating .env from .env.example..."; \
+		cp .env.example .env; \
+	fi
+
 # Test targets
 test: ## Run tests
 	@echo "Running tests..."
@@ -130,12 +138,19 @@ dev: docker-up ## Start development environment
 	@echo "  - Prometheus: http://localhost:9090"
 	@echo "  - Jaeger:     http://localhost:16686"
 	@echo "  - Kibana:     http://localhost:5601"
+	@echo "  - Grafana:    http://localhost:3000"
 
 dev-down: docker-down ## Stop development environment
 
 # Database targets
 mongo-shell: ## Connect to MongoDB shell
 	docker exec -it sportsnewscrawler-mongodb-1 mongosh
+
+purge-data: ## Purge all data (Mongo, Kafka, Prometheus, etc.) by removing volumes
+	@echo "Purging all data..."
+	docker-compose down -v
+	@echo "Data purged. Run 'make up' to start fresh."
+
 
 # Kafka targets
 kafka-topics: ## List Kafka topics

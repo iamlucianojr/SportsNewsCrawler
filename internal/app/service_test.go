@@ -39,9 +39,21 @@ type MockProvider struct {
 	mock.Mock
 }
 
-func (m *MockProvider) FetchLatest(ctx context.Context, limit int) ([]domain.Article, error) {
-	args := m.Called(ctx, limit)
-	return args.Get(0).([]domain.Article), args.Error(1)
+func (m *MockProvider) Crawl(ctx context.Context, handler func([]domain.Article) error) error {
+	args := m.Called(ctx, handler)
+
+	// If only error is returned (len 1), return it directly
+	if len(args) == 1 {
+		return args.Error(0)
+	}
+
+	// Simulate crawl by calling handler with mocked articles if provided as first arg
+	if articles := args.Get(0); articles != nil {
+		if err := handler(articles.([]domain.Article)); err != nil {
+			return err
+		}
+	}
+	return args.Error(1)
 }
 
 func (m *MockProvider) GetName() string {
@@ -91,6 +103,11 @@ func (m *MockEventProducer) Publish(ctx context.Context, article *domain.Article
 	return args.Error(0)
 }
 
+func (m *MockEventProducer) PublishBatch(ctx context.Context, articles []domain.Article) error {
+	args := m.Called(ctx, articles)
+	return args.Error(0)
+}
+
 func (m *MockEventProducer) Close() error {
 	args := m.Called()
 	return args.Error(0)
@@ -103,7 +120,13 @@ func TestNewsCrawlerService_FetchAndProcess(t *testing.T) {
 
 	article := domain.Article{ID: "mock_1", Source: "mock", Title: "Test"}
 
-	provider.On("FetchLatest", mock.Anything, 10).Return([]domain.Article{article}, nil)
+	// provider.On("FetchLatest", mock.Anything, 10).Return([]domain.Article{article}, nil)
+	// New: Mock Crawl to invoke the handler
+	provider.On("Crawl", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		handler := args.Get(1).(func([]domain.Article) error)
+		_ = handler([]domain.Article{article})
+	}).Return(nil)
+
 	provider.On("GetName").Return("mock").Maybe()
 
 	// Expect GetContentHashes call - return empty map to simulate new article (triggering publish)
@@ -118,8 +141,8 @@ func TestNewsCrawlerService_FetchAndProcess(t *testing.T) {
 	// But let's try to be precise if possible or loose if hard.
 	repo.On("BulkUpsert", mock.Anything, mock.Anything).Return(nil)
 
-	// The service now calls Publish
-	producer.On("Publish", mock.Anything, mock.Anything).Return(nil)
+	// The service now calls PublishBatch
+	producer.On("PublishBatch", mock.Anything, mock.Anything).Return(nil)
 
 	// New constructor signature
 	svc := NewNewsCrawlerService(repo, []domain.Provider{provider}, producer, 1*time.Second, 10, 5)

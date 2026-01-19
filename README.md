@@ -6,15 +6,13 @@ A production-ready microservice for ingesting, normalizing, and distributing spo
 
 - [Overview](#overview)
 - [Architecture](#architecture)
-- [Design Decisions](#design-decisions)
+- [Design Decisions & Trade-offs](#design-decisions--trade-offs)
 - [Project Structure](#project-structure)
 - [Features](#features)
 - [Getting Started](#getting-started)
 - [Configuration](#configuration)
 - [Observability](#observability)
 - [Deployment](#deployment)
-- [Known Limitations](#known-limitations)
-- [Future Improvements](#future-improvements)
 
 ## Overview
 
@@ -26,22 +24,11 @@ The Sports News Crawler is a scalable microservice that:
 - **Syncs** articles to a CMS via event-driven processing
 - **Monitors** system health with Prometheus metrics and Jaeger tracing
 
-### Key Capabilities
-
-- ✅ Multi-source ingestion with pluggable transformers
-- ✅ Event-driven architecture with Kafka
-- ✅ Content-based deduplication
-- ✅ Dead Letter Queue (DLQ) for failed messages
-- ✅ Distributed tracing with OpenTelemetry/Jaeger
-- ✅ Prometheus metrics for observability
-- ✅ Graceful shutdown with worker pool management
-- ✅ Kubernetes-ready with CI/CD pipeline
-
 ## Architecture
 
 ### System Context
 
-\`\`\`mermaid
+```mermaid
 graph TB
     subgraph "External Sources"
         PL[PulseLive API]
@@ -66,6 +53,8 @@ graph TB
     subgraph "Observability"
         PROM[Prometheus]
         JAEGER[Jaeger]
+        GRAFANA[Grafana]
+        KIBANA[Kibana]
     end
     
     PL -->|Fetch Articles| ING
@@ -79,34 +68,12 @@ graph TB
     SYNC -.->|Metrics| PROM
     ING -.->|Traces| JAEGER
     SYNC -.->|Traces| JAEGER
-\`\`\`
-
-### Component Architecture
-
-\`\`\`mermaid
-graph LR
-    subgraph "Ingestion Flow"
-        PROVIDER[Provider Loop] -->|Job| WORKER[Worker Pool]
-        WORKER -->|Fetch| API[External API]
-        API -->|Articles| HASH[Hash Generator]
-        HASH -->|Check| REPO[(Repository)]
-        REPO -->|Changed?| FILTER{Content Changed?}
-        FILTER -->|Yes| KAFKA[Kafka Producer]
-        FILTER -->|No| SKIP[Skip]
-        FILTER -->|All| UPSERT[Bulk Upsert]
-    end
-    
-    subgraph "Sync Flow"
-        KAFKA -->|Event| CONSUMER[Kafka Consumer]
-        CONSUMER -->|Process| CMS_SYNC[CMS Gateway]
-        CMS_SYNC -->|Success| DONE[Done]
-        CMS_SYNC -->|Failure| DLQ_PROD[DLQ Producer]
-    end
-\`\`\`
+    PROM --> GRAFANA
+```
 
 ### Data Flow
 
-\`\`\`mermaid
+```mermaid
 sequenceDiagram
     participant Provider
     participant Worker
@@ -116,14 +83,14 @@ sequenceDiagram
     participant CMS
     
     Provider->>Worker: Schedule Job
-    Worker->>Provider: FetchLatest()
+    Worker->>Provider: FetchLatest() (Stream/Page)
     Provider-->>Worker: Raw Articles
-    Worker->>Worker: Generate ContentHash
+    Worker->>Worker: Generate ContentHash (SHA256)
     Worker->>MongoDB: GetContentHashes()
     MongoDB-->>Worker: Existing Hashes
     Worker->>Worker: Filter Changed
     Worker->>MongoDB: BulkUpsert(all)
-    Worker->>Kafka: Publish(changed only)
+    Worker->>Kafka: Publish Batch(changed only)
     Kafka->>Consumer: Consume Event
     Consumer->>CMS: SyncArticle()
     alt Success
@@ -131,352 +98,146 @@ sequenceDiagram
     else Failure
         Consumer->>Kafka: Publish to DLQ
     end
-\`\`\`
+```
 
-## Design Decisions
+## Design Decisions & Trade-offs
 
-### 1. Event-Driven Architecture (Kafka)
+### 1. Hexagonal Architecture
+**Decision**: We use a strict Hexagonal (Ports & Adapters) architecture, separating `domain`, `app` (application logic), and `infra` (adapters).
+*   **Why**: Ensures the core business logic is independent of external tools (MongoDB, Kafka). It makes testing easier by allowing simple mocks for all interfaces.
+*   **Trade-off**: Adds boilerplate (interfaces, DTOs, factories) compared to a layered architecture, but pays off in maintainability for complex systems.
 
-**Decision**: Use Kafka as the message broker between ingestion and synchronization.
+### 2. Event-Driven Architecture (Kafka)
+**Decision**: Decouple ingestion from CMS synchronization using Kafka.
+*   **Why**: Allows the ingestion layer to scale independently from the CMS. If the CMS goes down, we don't lose data; events just queue up.
+*   **Trade-off**: Managing Kafka introduces infrastructure complexity and eventual consistency. Immediate "read-after-write" is not guaranteed.
 
-**Rationale**:
-- **Decoupling**: Ingestion and CMS sync can scale independently
-- **Reliability**: Kafka provides durability and replay capabilities
-- **Scalability**: Multiple consumers can process events in parallel
+### 3. Content-Based Deduplication (SHA256)
+**Decision**: Use a SHA256 hash of the article's core content (Title, Body, Summary) to detect changes.
+*   **Why**: Timestamp-based checks are unreliable (many APIs don't verify "updated_at" correctly). Hashing ensures we only process *meaningful* changes.
+*   **Trade-off**: Hashing consumes CPU cycles. We migrated to a batch processing model (fetch 100 -> hash 100 -> upsert 100) to mitigate this.
 
-**Trade-offs**:
-- Added complexity (Zookeeper/Kafka infrastructure)
-- Eventual consistency between MongoDB and CMS
+### 4. Polling vs. Streaming
+**Decision**: The `GenericProvider` supports both single-page fetching and multi-page streaming (recursively following pagination).
+*   **Why**: Some sources give us everything in one go, others need deep crawling.
+*   **Trade-off**: Complex state management in the provider (`PageInfo` tracking). We added a `maxSafetyPages` limit to prevent infinite loops on broken APIs.
 
-### 2. Content-Based Deduplication
-
-**Decision**: Use SHA256 hash of `Title + Source + Summary + Body` to detect changes.
-
-**Rationale**:
-- Prevents re-publishing identical content
-- Detects actual content updates (e.g., corrections)
-- More reliable than timestamp-based detection
-
-**Trade-offs**:
-- Timestamp-only changes won't trigger updates
-- Computational overhead of hashing
-
-### 3. Independent Provider Scheduling
-
-**Decision**: Each provider runs on its own ticker/goroutine.
-
-**Rationale**:
-- Slow providers don't block fast ones
-- Better resource utilization
-- Easier to add/remove sources dynamically
-
-**Trade-offs**:
-- More goroutines (minimal overhead in Go)
-- Slightly more complex shutdown logic
-
-### 4. Worker Pool Pattern
-
-**Decision**: Fixed-size worker pool processes jobs from a buffered channel.
-
-**Rationale**:
-- Limits concurrent API calls
-- Provides backpressure
-- Predictable resource usage
-
-**Trade-offs**:
-- Jobs can queue if workers are saturated
-- Fixed pool size requires tuning
-
-### 5. Hexagonal Architecture
-
-**Decision**: Clean separation: `domain` → `app` → `infra` → `transport`.
-
-**Rationale**:
-- Testability (easy to mock infrastructure)
-- Flexibility (swap MongoDB for Postgres)
-- Maintainability (clear boundaries)
-
-**Trade-offs**:
-- More boilerplate
-- Steeper learning curve for new developers
+### 5. MongoDB for Storage
+**Decision**: Use MongoDB for storing raw content.
+*   **Why**: Flexible schema allowing us to ingest varied fields from different providers without strict schema migrations.
+*   **Trade-off**: No ACID transactions across collections (though we only need single-document atomicity for upserts).
 
 ## Project Structure
 
-\`\`\`
+```
 SportsNewsCrawler/
-├── cmd/
-│   ├── server/           # Main application entry point
-│   └── mock-feed/        # Mock news feed for testing
+├── cmd/                  # Entry points
 ├── internal/
-│   ├── domain/           # Core business entities & interfaces
-│   │   ├── article.go    # Article entity
-│   │   └── transformer.go
-│   ├── app/              # Application services (business logic)
-│   │   ├── service.go    # Ingestion service
-│   │   └── sync_service.go # CMS sync service
-│   ├── infra/            # Infrastructure implementations
-│   │   ├── gateway/      # External system adapters (CMS)
-│   │   ├── provider/     # News source clients
-│   │   ├── repository/   # Data persistence (MongoDB)
-│   │   ├── queue/        # Kafka producer/consumer
-│   │   ├── transformer/  # Data normalization
-│   │   ├── metrics/      # Prometheus metrics
-│   │   └── tracing/      # OpenTelemetry setup
-│   └── transport/
-│       └── http/         # HTTP server (health, metrics)
-├── pkg/
-│   └── config/           # Configuration management
-├── k8s/                  # Kubernetes manifests
+│   ├── domain/           # Entities & Interfaces (Pure Go, no deps)
+│   ├── app/              # Use Cases (Service implementations)
+│   ├── infra/            # Adapters (MongoDB, Kafka, PulseLive, HTTP)
+│   └── transport/        # Port (HTTP Server)
+├── pkg/                  # Shared libraries
+│   ├── config/           # Configuration management
+│   └── logging/          # Shared logging utilities
 ├── config/               # Configuration files
-│   ├── sources.json      # News sources configuration
-│   ├── prometheus.yml    # Prometheus scrape config
-│   └── filebeat.yml      # Log shipping config
-├── .github/workflows/    # CI/CD pipelines
-├── docker-compose.yml    # Local development stack
-└── README.md
-\`\`\`
+├── k8s/                  # Kubernetes manifests
+└── scripts/              # Helper scripts
+```
 
 ## Features
 
-### Fully Implemented
-
-- ✅ **Multi-Source Ingestion**: PulseLive API + Mock Feed
-- ✅ **Pluggable Transformers**: Factory pattern for adding new sources
-- ✅ **Content Deduplication**: SHA256-based change detection
-- ✅ **Event Publishing**: Kafka with ID-based partitioning
-- ✅ **CMS Synchronization**: Event-driven with retry via DLQ
-- ✅ **Graceful Shutdown**: Worker pool draining
-- ✅ **Observability**:
-  - Prometheus metrics (ingestion, errors, latency, duplicates)
-  - OpenTelemetry distributed tracing
-  - Structured JSON logging (slog)
-- ✅ **Security**: Non-root Docker containers
-- ✅ **CI/CD**: GitHub Actions (test + build + push)
-- ✅ **Kubernetes**: Production-ready manifests
-
-### Partially Implemented
-
-- ⚠️ **Authentication**: Endpoints (`/health`, `/metrics`) are unauthenticated
-- ⚠️ **Rate Limiting**: No rate limiting on external API calls
+- **Multi-Source Ingestion**: Configurable providers (PulseLive + Mock).
+- **Deduplication**: Intelligent batch processing to ignore duplicates.
+- **Resilience**: Circuit Breakers on external APIs, DLQ for broken syncs.
+- **Observability**: RED Method (Rate, Errors, Duration) dashboards.
+- **Production Ready**: Multi-stage Docker builds, Graceful Shutdown, Helm-ready manifests.
 
 ## Getting Started
 
 ### Prerequisites
-
-- **Docker** & **Docker Compose**
-- **Go 1.23+** (for local development)
+- Docker & Docker Compose
+- Go 1.24+
 
 ### Quick Start
-
-1. **Clone the repository**:
-   \`\`\`bash
-   git clone https://github.com/lucianojr/sports-news-crawler.git
-   cd sports-news-crawler
-   \`\`\`
-
-2. **Start the stack**:
-   \`\`\`bash
-   make dev
-   # or
-   docker-compose up -d
-   \`\`\`
-
-3. **Verify services**:
-   \`\`\`bash
-   make health
-   # or
-   curl http://localhost:8080/health
-   \`\`\`
-
-4. **View logs**:
-   \`\`\`bash
-   make logs
-   \`\`\`
-
-### Makefile Commands
-
-The project includes a comprehensive Makefile for common operations:
-
-\`\`\`bash
-make help              # Show all available commands
-make build             # Build the application
-make test              # Run tests
-make test-coverage     # Run tests with coverage report
-make lint              # Run golangci-lint
-make check             # Run all checks (fmt, vet, lint, test)
-
-# Development
-make dev               # Start development environment
-make dev-down          # Stop development environment
-make run               # Run application locally
-make run-mock          # Run mock feed server
-
-# Docker
-make docker-up         # Start all services
-make docker-down       # Stop all services
-make docker-logs       # View logs
-make docker-restart    # Restart services
-
-# Kubernetes
-make k8s-deploy        # Deploy to Kubernetes
-make k8s-delete        # Delete Kubernetes resources
-make k8s-logs          # View application logs
-make k8s-status        # Show deployment status
-
-# Monitoring
-make metrics           # Open Prometheus
-make traces            # Open Jaeger UI
-make health            # Check application health
-
-# Database & Kafka
-make mongo-shell       # Connect to MongoDB
-make kafka-topics      # List Kafka topics
-make kafka-consume     # Consume from main topic
-make kafka-consume-dlq # Consume from DLQ topic
-\`\`\`
-
-### Running Tests
-
-\`\`\`bash
-make test              # Run all tests
-make test-race         # Run with race detector
-make test-coverage     # Generate coverage report
-\`\`\`
+1.  **Start Services**:
+    ```bash
+    make init-env
+    make dev
+    ```
+2.  **Verify**:
+    ```bash
+    make health
+    ```
 
 ## Configuration
 
-### Environment Variables
+Configuration is managed via `.env` (infrastructure) and `sources.json` (business logic).
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| \`SERVER_PORT\` | \`8080\` | HTTP server port |
-| \`MONGO_URI\` | \`mongodb://mongodb:27017\` | MongoDB connection string |
-| \`MONGO_DB_NAME\` | \`news_crawler\` | Database name |
-| \`MONGO_COLLECTION\` | \`articles\` | Collection name |
-| \`POLL_INTERVAL\` | \`1m\` | Provider polling interval |
-| \`BATCH_SIZE\` | \`20\` | Articles per fetch |
-| \`WORKER_POOL_SIZE\` | \`5\` | Concurrent workers |
-| \`KAFKA_BROKERS\` | \`kafka:29092\` | Kafka broker addresses |
-| \`KAFKA_TOPIC\` | \`news_articles\` | Main topic |
-| \`KAFKA_DLQ_TOPIC\` | \`news_articles_dlq\` | Dead letter queue topic |
-| \`OTEL_EXPORTER_OTLP_ENDPOINT\` | \`localhost:4317\` | Jaeger endpoint |
-
-### Adding a New Source
-
-1. Create a transformer in \`internal/infra/transformer/\`:
-   \`\`\`go
-   type MySourceTransformer struct{}
-   
-   func (t *MySourceTransformer) Transform(data []byte) ([]domain.Article, error) {
-       // Parse and normalize
-   }
-   \`\`\`
-
-2. Register in \`internal/infra/transformer/factory.go\`:
-   \`\`\`go
-   case "mysource":
-       return NewMySourceTransformer(), nil
-   \`\`\`
-
-3. Add to \`config/sources.json\`:
-   \`\`\`json
-   {
-       "name": "my-source",
-       "url": "https://api.example.com/news",
-       "transformer": "mysource"
-   }
-   \`\`\`
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `MONGO_URI` | Database Connection | `mongodb://mongodb:27017` |
+| `KAFKA_BROKERS` | Kafka Cluster | `kafka:29092` |
+| `POLL_INTERVAL` | How often to check sources | `1m` |
+| `BATCH_SIZE` | Articles per provider fetch | `20` |
 
 ## Observability
 
-### Metrics (Prometheus)
+The stack includes Prometheus, Grafana, Jaeger, and ELK (Filebeat/Kibana).
 
-Access at \`http://localhost:9090\`
+### 1. Monitoring Routine (Grafana)
+**Access**: [http://localhost:3000](http://localhost:3000) (admin/admin)
 
-**Key Metrics**:
-- \`articles_ingested_total\`: Total articles fetched (by source, status)
-- \`articles_duplicates_skipped_total\`: Skipped due to no content change
-- \`worker_active_count\`: Active workers
-- \`cms_sync_duration_seconds\`: CMS sync latency
-- \`dlq_messages_published_total\`: Failed messages sent to DLQ
+The pre-configured dashboard "Sports News Crawler - Overview" tracks the **RED Method** (Rate, Errors, Duration):
+*   **Ingestion Rate (Rate)**: Articles processed per minute. A drop indicates source issues.
+*   **Error Rate (Errors)**: Spikes here indicate API failures or parsing issues.
+*   **Fetch Duration (Duration)**: Response times (p95) from external providers.
 
-### Tracing (Jaeger)
+**Key Metrics to Watch**:
+*   **Duplicate Rate**: A high duplicate rate is **GOOD**. It means the deduplication logic is working and we aren't spamming downstream.
+*   **Active Workers**: If this consistently hits the limit (default 5), increase `WORKER_POOL_SIZE`.
 
-Access at \`http://localhost:16686\`
+### 2. Deep Dive: Logs (Kibana / JSON)
+**Access**: [http://localhost:5601](http://localhost:5601)
 
-Traces show:
-- Provider fetch latency
-- Hash computation time
-- Kafka publish operations
-- CMS sync duration
-
-### Logs
-
-Structured JSON logs via \`slog\`:
-\`\`\`bash
+Logs are structured in JSON for easy parsing.
+```bash
+# View live logs via CLI
 docker-compose logs -f app | jq
-\`\`\`
+```
 
-## Deployment
+**JSON Structure**:
+```json
+{
+  "level": "ERROR",
+  "msg": "Crawl failed",
+  "provider": "pulselive",
+  "trace_id": "12345abcdef",
+  "error": "http timeout"
+}
+```
 
-### Kubernetes
+**How to get the most out of logs**:
+*   **Filter by Level**: Focus on `ERROR` to find immediate problems.
+*   **Correlate with Traces**: Copy the `trace_id` from a log entries and paste it into Jaeger to see exactly what happened during that request.
 
-See [deployment.md](deployment.md) for detailed instructions.
+### 3. Deep Dive: Traces (Jaeger)
+**Access**: [http://localhost:16686](http://localhost:16686)
 
-**Quick Deploy**:
-\`\`\`bash
-kubectl apply -f k8s/namespace.yaml
-kubectl apply -f k8s/config.yaml
-kubectl apply -f k8s/mongodb.yaml
-kubectl apply -f k8s/kafka.yaml
-kubectl apply -f k8s/jaeger.yaml
-kubectl apply -f k8s/app.yaml
-\`\`\`
+Jaeger visualizes the entire lifespan of a request (or background job).
 
-### CI/CD
+**How to use Tracing**:
+*   **Identify Bottlenecks**: Long bars in the trace view show where time is spent.
+    *   *Long "HTTP GET"* = Slow external provider.
+    *   *Long "Mongo Find"* = DB index issue or load.
+*   **Error Root Cause**: Red spans indicate failure. Click them to see exactly which component (Provider, DB, or Kafka) failed.
 
-GitHub Actions workflow (\`.github/workflows/ci.yml\`) automatically:
-1. Runs tests on PR
-2. Builds Docker image on merge to \`main\`
-3. Pushes to \`lucianojr/news_crawler:latest\`
+### 4. Alerting (Prometheus)
+**Access**: [http://localhost:9090](http://localhost:9090)
 
-**Required Secrets**:
-- \`DOCKER_USERNAME\`
-- \`DOCKER_PASSWORD\`
-
-## Known Limitations
-
-1. **Single CMS**: Only supports one CMS endpoint (mock)
-2. **No Authentication**: Metrics/health endpoints are public
-3. **Fixed Worker Pool**: Pool size is static (not auto-scaling)
-4. **Basic Error Handling**: DLQ is simple (no retry backoff)
-5. **Local Storage**: MongoDB runs as single replica (not HA)
-
-## Future Improvements
-
-### High Priority
-- [ ] Add authentication middleware for HTTP endpoints
-- [ ] Implement exponential backoff for DLQ retries
-- [ ] Add rate limiting per provider
-- [ ] Support multiple CMS destinations
-
-### Medium Priority
-- [ ] Auto-scaling worker pool based on queue depth
-- [ ] GraphQL API for querying articles
-- [ ] Webhook support for real-time source updates
-- [ ] Article enrichment (sentiment analysis, tagging)
-
-### Low Priority
-- [ ] Admin UI for managing sources
-- [ ] A/B testing framework for transformers
-- [ ] ML-based duplicate detection
-
----
+Common PromQL queries for debugging:
+*   `rate(articles_ingested_total[5m])`: Current ingestion speed.
+*   `sum(increase(dlq_messages_published_total[1h]))`: Number of failed syncs in the last hour.
 
 ## License
-
 MIT
-
-## Contact
-
-For questions or support, please open an issue on GitHub.

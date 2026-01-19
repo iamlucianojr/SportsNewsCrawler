@@ -11,11 +11,11 @@ import (
 	"github.com/SportsNewsCrawler/internal/infra/tracing"
 	transport "github.com/SportsNewsCrawler/internal/transport/http"
 	"github.com/SportsNewsCrawler/pkg/config"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.uber.org/fx"
 )
 
 func main() {
-	// Initialize structured logging
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
@@ -59,6 +59,7 @@ func main() {
 		),
 		fx.Invoke(
 			SetupTracer,
+			WaitForReady, // Block until dependencies are ready
 			RegisterHooks,
 			StartServer,
 		),
@@ -85,12 +86,10 @@ func RegisterHooks(lc fx.Lifecycle, service *app.NewsCrawlerService, syncService
 
 func SetupTracer(lc fx.Lifecycle) error {
 	ctx := context.Background()
-	// Initialize tracer with service name "news-crawler"
-	// Ensure OTEL_EXPORTER_OTLP_ENDPOINT is set in env if not localhost
 	shutdown, err := tracing.InitTracer(ctx, "news-crawler")
 	if err != nil {
 		slog.Error("Failed to initialize tracer", "error", err)
-		return err // Or return nil to fail soft? Better to fail hard if configured.
+		return err
 	}
 
 	lc.Append(fx.Hook{
@@ -100,6 +99,20 @@ func SetupTracer(lc fx.Lifecycle) error {
 		},
 	})
 	return nil
+}
+
+// WaitForReady blocks until all dependencies are ready.
+func WaitForReady(
+	cfg *config.Config,
+	mongoClient *mongo.Client,
+) error {
+	ctx := context.Background()
+	waiter := app.NewReadinessWaiter(
+		mongoClient,
+		cfg.KafkaBrokers,
+		cfg.KafkaTopic,
+	)
+	return waiter.WaitForDependencies(ctx)
 }
 
 func StartServer(lc fx.Lifecycle, server *http.Server) {

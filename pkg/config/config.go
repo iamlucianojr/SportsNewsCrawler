@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"strconv"
@@ -11,10 +12,18 @@ import (
 	"github.com/joho/godotenv"
 )
 
+type PaginationConfig struct {
+	Type         string `json:"type"`        // "page" or "offset"
+	PageParam    string `json:"page_param"`  // e.g. "page", "p", "start"
+	LimitParam   string `json:"limit_param"` // e.g. "pageSize", "limit"
+	DefaultLimit int    `json:"default_limit"`
+}
+
 type SourceConfig struct {
-	Name        string `json:"name"`
-	URL         string `json:"url"`
-	Transformer string `json:"transformer"`
+	Name        string           `json:"name"`
+	URL         string           `json:"url"`
+	Transformer string           `json:"transformer"`
+	Pagination  PaginationConfig `json:"pagination"`
 }
 
 type Config struct {
@@ -32,7 +41,7 @@ type Config struct {
 	SourcesFilePath string
 }
 
-func Load() *Config {
+func Load() (*Config, error) {
 	// Load .env file if it exists
 	_ = godotenv.Load()
 
@@ -56,7 +65,12 @@ func Load() *Config {
 		SourcesFilePath: getEnv("SOURCES_FILE_PATH", "config/sources.json"),
 	}
 	cfg.Sources = loadSources(cfg.SourcesFilePath)
-	return cfg
+
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
+	return cfg, nil
 }
 
 func loadSources(path string) []SourceConfig {
@@ -74,7 +88,7 @@ func loadSources(path string) []SourceConfig {
 		return []SourceConfig{
 			{
 				Name:        "default-pulselive",
-				URL:         getEnv("PULSE_API_URL", "https://content-ecb.pulselive.com/content/ecb/text/EN/?pageSize=20"),
+				URL:         getEnv("PULSE_API_URL", "https://content-ecb.pulselive.com/content/ecb/text/EN/"),
 				Transformer: "pulselive",
 			},
 		}
@@ -90,7 +104,47 @@ func loadSources(path string) []SourceConfig {
 		slog.Error("Error decoding sources.json", "error", err)
 		return nil
 	}
-	return sources
+
+	validSources := make([]SourceConfig, 0, len(sources))
+	for _, s := range sources {
+		if err := s.Validate(); err != nil {
+			slog.Error("Invalid source config, skipping", "name", s.Name, "error", err)
+			continue
+		}
+		validSources = append(validSources, s)
+	}
+
+	if len(validSources) == 0 {
+		slog.Warn("No valid sources found in config file")
+	}
+
+	return validSources
+}
+
+func (s *SourceConfig) Validate() error {
+	if s.Name == "" {
+		return fmt.Errorf("name is required")
+	}
+	if s.URL == "" {
+		return fmt.Errorf("url is required")
+	}
+	if !strings.HasPrefix(s.URL, "http") {
+		return fmt.Errorf("url must start with http/https")
+	}
+	if s.Transformer == "" {
+		return fmt.Errorf("transformer is required")
+	}
+	return nil
+}
+
+func (c *Config) Validate() error {
+	if c.MongoURI == "" {
+		return fmt.Errorf("MONGO_URI is required")
+	}
+	if len(c.KafkaBrokers) == 0 {
+		return fmt.Errorf("KAFKA_BROKERS is required")
+	}
+	return nil
 }
 
 func getEnv(key, fallback string) string {

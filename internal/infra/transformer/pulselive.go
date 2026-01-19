@@ -49,10 +49,10 @@ func NewPulseLiveTransformer() *PulseLiveTransformer {
 	return &PulseLiveTransformer{}
 }
 
-func (t *PulseLiveTransformer) Transform(reader io.Reader) ([]domain.Article, error) {
+func (t *PulseLiveTransformer) Transform(reader io.Reader) ([]domain.Article, *domain.PageInfo, error) {
 	var pulseResp PulseLiveResponse
 	if err := json.NewDecoder(reader).Decode(&pulseResp); err != nil {
-		return nil, fmt.Errorf("failed to decode pulse live response: %w", err)
+		return nil, nil, fmt.Errorf("failed to decode pulse live response: %w", err)
 	}
 
 	articles := make([]domain.Article, 0, len(pulseResp.Content))
@@ -60,7 +60,14 @@ func (t *PulseLiveTransformer) Transform(reader io.Reader) ([]domain.Article, er
 		articles = append(articles, t.normalize(pa))
 	}
 
-	return articles, nil
+	pageInfo := &domain.PageInfo{
+		Page:       pulseResp.PageInfo.Page,
+		NumPages:   pulseResp.PageInfo.NumPages,
+		PageSize:   pulseResp.PageInfo.PageSize,
+		NumEntries: pulseResp.PageInfo.NumEntries,
+	}
+
+	return articles, pageInfo, nil
 }
 
 func (t *PulseLiveTransformer) normalize(pa PulseLiveArticle) domain.Article {

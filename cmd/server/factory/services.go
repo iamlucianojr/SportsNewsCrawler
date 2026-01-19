@@ -53,8 +53,10 @@ func NewNewsCrawlerService(
 	if eventProducer == nil {
 		return nil, errors.New("event producer is nil")
 	}
-	if cfg.BatchSize <= 0 || cfg.BatchSize > 1000 {
-		return nil, fmt.Errorf("invalid batch size: %d (must be 1-1000)", cfg.BatchSize)
+	// The instruction implies that batchSize should be a direct parameter or derived.
+	// Assuming the instruction meant to update the validation for cfg.BatchSize.
+	if cfg.BatchSize < 1 || cfg.BatchSize > 20000 {
+		return nil, fmt.Errorf("invalid batch size: %d (must be 1-20000)", cfg.BatchSize)
 	}
 	if cfg.WorkerPoolSize <= 0 || cfg.WorkerPoolSize > 100 {
 		return nil, fmt.Errorf("invalid worker pool size: %d (must be 1-100)", cfg.WorkerPoolSize)

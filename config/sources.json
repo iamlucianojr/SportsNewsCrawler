@@ -1,12 +1,24 @@
 [
     {
         "name": "ecb-pulselive",
-        "url": "https://content-ecb.pulselive.com/content/ecb/text/EN/?pageSize=20",
-        "transformer": "pulselive"
+        "url": "https://content-ecb.pulselive.com/content/ecb/text/EN/",
+        "transformer": "pulselive",
+        "pagination": {
+            "type": "page",
+            "page_param": "page",
+            "limit_param": "pageSize",
+            "default_limit": 100
+        }
     },
     {
         "name": "dummy-source",
         "url": "http://mock-feed:8081/feed",
-        "transformer": "dummy"
+        "transformer": "dummy",
+        "pagination": {
+            "type": "page",
+            "page_param": "page",
+            "limit_param": "pageSize",
+            "default_limit": 20
+        }
     }
 ]

@@ -98,6 +98,16 @@ services:
     labels:
       description: "Log visualization - http://localhost:5601"
 
+  setup-kibana:
+    image: curlimages/curl
+    container_name: sportsnewscrawler-setup-kibana
+    depends_on:
+      - kibana
+    volumes:
+      - ./scripts/setup_kibana.sh:/scripts/setup_kibana.sh:ro
+      - ./config/kibana:/config/kibana:ro
+    entrypoint: [ "/bin/sh", "/scripts/setup_kibana.sh" ]
+
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
     container_name: sportsnewscrawler-zookeeper

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -15,14 +16,15 @@ import (
 )
 
 type NewsCrawlerService struct {
-	repo          domain.Repository
-	providers     []domain.Provider
-	eventProducer domain.EventProducer
-	interval      time.Duration
-	batchSize     int
-	workerCount   int
-	jobs          chan job
-	wg            sync.WaitGroup // Service-wide WaitGroup for graceful shutdown
+	repo            domain.Repository
+	providers       []domain.Provider
+	eventProducer   domain.EventProducer
+	interval        time.Duration
+	batchSize       int
+	workerCount     int
+	jobs            chan job
+	wg              sync.WaitGroup // Service-wide WaitGroup for graceful shutdown
+	activeProviders sync.Map       // Track active provider processing
 }
 
 type job struct {
@@ -51,7 +53,6 @@ func NewNewsCrawlerService(
 func (s *NewsCrawlerService) Start(ctx context.Context) {
 	slog.Info("Starting news crawler service", "interval", s.interval, "workers", s.workerCount)
 
-	// Service-wide waitgroup tracks WORKER goroutines
 	for i := 0; i < s.workerCount; i++ {
 		s.wg.Add(1)
 		go s.worker(ctx, i)
@@ -60,6 +61,7 @@ func (s *NewsCrawlerService) Start(ctx context.Context) {
 	// Providers waitgroup tracks PROVIDER goroutines
 	var providersWg sync.WaitGroup
 	for _, provider := range s.providers {
+		slog.Info("Starting provider loop", "provider", provider.GetName())
 		providersWg.Add(1)
 		go s.runProviderLoop(ctx, provider, &providersWg)
 	}
@@ -68,14 +70,11 @@ func (s *NewsCrawlerService) Start(ctx context.Context) {
 	<-ctx.Done()
 	slog.Info("Context cancelled, stopping news crawler service...")
 
-	// 1. Wait for all providers to stop producing jobs
 	providersWg.Wait()
 	slog.Info("All providers stopped")
 
-	// 2. Close jobs channel to signal workers to drain and exit
 	close(s.jobs)
 
-	// 3. Wait for all workers to finish processing
 	s.wg.Wait()
 	slog.Info("All workers stopped")
 }
@@ -116,8 +115,18 @@ func (s *NewsCrawlerService) worker(ctx context.Context, id int) {
 
 	// Range over channel handles closing correctly: exits loop when closed and empty
 	for j := range s.jobs {
+		// Prevent concurrent processing of the same provider
+		name := j.provider.GetName()
+		if _, loaded := s.activeProviders.LoadOrStore(name, true); loaded {
+			slog.Warn("Skipping concurrent run", "provider", name, "worker_id", id)
+			continue
+		}
+
 		metrics.WorkerActiveCount.Inc()
-		s.processProvider(ctx, j.provider)
+		func() {
+			defer s.activeProviders.Delete(name)
+			s.processProvider(ctx, j.provider)
+		}()
 		metrics.WorkerActiveCount.Dec()
 	}
 	slog.Info("Worker stopped", "worker_id", id)
@@ -129,27 +138,42 @@ func (s *NewsCrawlerService) processProvider(ctx context.Context, provider domai
 	ctx, span := tr.Start(ctx, "processProvider")
 	defer span.End()
 
-	start := time.Now()
+	slog.Debug("Starting crawl for provider", "provider", provider.GetName())
 	span.SetAttributes(attribute.String("provider", provider.GetName()))
-	slog.Debug("Polling provider", "provider", provider.GetName())
 
-	articles, err := provider.FetchLatest(ctx, s.batchSize)
-	if err != nil {
-		span.RecordError(err)
-		slog.Error("Error fetching from provider", "provider", provider.GetName(), "error", err)
-		metrics.ArticlesIngested.WithLabelValues(provider.GetName(), "error_fetch").Inc()
-		return
+	// Define handler that processes each page of articles
+	handler := func(articles []domain.Article) error {
+		return s.processBatch(ctx, provider, articles)
 	}
-	span.SetAttributes(attribute.Int("articles_fetched", len(articles)))
+
+	if err := provider.Crawl(ctx, handler); err != nil {
+		span.RecordError(err)
+		slog.Error("Crawl failed", "provider", provider.GetName(), "error", err)
+		metrics.ArticlesIngested.WithLabelValues(provider.GetName(), "error_crawl").Inc()
+	}
+}
+
+func (s *NewsCrawlerService) processBatch(ctx context.Context, provider domain.Provider, articles []domain.Article) error {
+	start := time.Now()
+
+	// Dedup within batch
+	uniqueArticles := make([]domain.Article, 0, len(articles))
+	seenIDs := make(map[string]bool)
+	for _, a := range articles {
+		if !seenIDs[a.ID] {
+			seenIDs[a.ID] = true
+			uniqueArticles = append(uniqueArticles, a)
+		}
+	}
+	articles = uniqueArticles
 
 	if len(articles) == 0 {
-		return
+		return nil
 	}
 
 	// 1. Calculate Hashes
 	var ids []string
 	for i := range articles {
-		// Simple hash generation (Title + PublishedAt) - in production use a stronger hash of Content
 		articles[i].ContentHash = generateHash(&articles[i])
 		ids = append(ids, articles[i].ID)
 	}
@@ -157,9 +181,7 @@ func (s *NewsCrawlerService) processProvider(ctx context.Context, provider domai
 	// 2. Fetch Existing Hashes
 	existingHashes, err := s.repo.GetContentHashes(ctx, ids)
 	if err != nil {
-		slog.Error("Failed to fetch existing hashes", "error", err)
-		// Proceed? Or fail? Fail safe to avoid spam
-		return
+		return fmt.Errorf("failed to fetch hashes: %w", err)
 	}
 
 	// 3. Identify Changed Articles
@@ -167,7 +189,11 @@ func (s *NewsCrawlerService) processProvider(ctx context.Context, provider domai
 	skippedCount := 0
 	for _, article := range articles {
 		oldHash, exists := existingHashes[article.ID]
-		if !exists || oldHash != article.ContentHash {
+		if !exists {
+			slog.Info("Article New", "provider", provider.GetName(), "id", article.ID)
+			changedArticles = append(changedArticles, article)
+		} else if oldHash != article.ContentHash {
+			slog.Info("Article Changed", "provider", provider.GetName(), "id", article.ID)
 			changedArticles = append(changedArticles, article)
 		} else {
 			skippedCount++
@@ -181,33 +207,30 @@ func (s *NewsCrawlerService) processProvider(ctx context.Context, provider domai
 	metrics.IngestionDuration.WithLabelValues(provider.GetName()).Observe(time.Since(start).Seconds())
 	metrics.ArticlesIngested.WithLabelValues(provider.GetName(), "success").Add(float64(len(articles)))
 
-	// 4. Bulk Upsert (Update all, including timestamps)
+	// 4. Bulk Upsert
 	if err := s.repo.BulkUpsert(ctx, articles); err != nil {
-		slog.Error("Error bulk inserting articles", "error", err)
-		return
+		return fmt.Errorf("bulk upsert failed: %w", err)
 	}
 
-	// 5. Publish ONLY changed articles
+	// 5. Publish Changed
 	if len(changedArticles) > 0 {
 		slog.Info("Publishing changed articles", "count", len(changedArticles), "provider", provider.GetName())
-		for _, article := range changedArticles {
-			if err := s.eventProducer.Publish(ctx, &article); err != nil {
-				slog.Error("Error publishing article event", "article_id", article.ID, "error", err)
-				continue
-			}
+		if err := s.eventProducer.PublishBatch(ctx, changedArticles); err != nil {
+			slog.Error("Error publishing article batch", "count", len(changedArticles), "error", err)
+			// Continue even if publish fails, data is in DB
 		}
 	}
+
+	return nil
 }
 
 func generateHash(a *domain.Article) string {
 	// Use SHA256 of content fields to detect changes
-	// We include Title, Summary, Body, and Source.
+	// We include Title, Summary, Body, Source, and URL.
 	// We intentionally exclude PublishedAt/FetchedAt to detect "Update Same Content" vs "New Content"
-	// However, if the source changes the *timestamp* but not content, we usually don't want to re-process unless needed.
-	// But if we exclude timestamp, different articles with same title/body (rare) might collide? Unlikely for news.
-	// Let's include what defines "Content Identity".
 	hasher := sha256.New()
 	hasher.Write([]byte(a.Source))
+	hasher.Write([]byte(a.URL))
 	hasher.Write([]byte(a.Title))
 	hasher.Write([]byte(a.Summary))
 	hasher.Write([]byte(a.Body))

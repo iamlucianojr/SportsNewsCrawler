@@ -25,7 +25,7 @@ func NewProviders(cfg *config.Config) ([]domain.Provider, error) {
 			continue
 		}
 
-		p := provider.NewGenericProvider(source.Name, source.URL, tr)
+		p := provider.NewGenericProvider(source.Name, source.URL, tr, source.Pagination)
 		providers = append(providers, p)
 		slog.Info("Registered provider", "provider", source.Name, "transformer", source.Transformer)
 	}

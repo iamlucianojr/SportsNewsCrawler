@@ -19,15 +19,15 @@ filebeat.inputs:
 
 output.elasticsearch:
   hosts: ["elasticsearch:9200"]
-  index: "sportsnewscrawler-%{+yyyy.MM.dd}"
+  # index: "sportsnewscrawler-%{+yyyy.MM.dd}" # Use default filebeat-*
 
 # Disable Kibana setup to avoid connection errors
 setup.kibana.enabled: false
 setup.dashboards.enabled: false
 
 # Configure index template
-setup.template.name: "sportsnewscrawler"
-setup.template.pattern: "sportsnewscrawler-*"
+# setup.template.name: "sportsnewscrawler"
+# setup.template.pattern: "sportsnewscrawler-*"
 setup.template.settings:
   index.number_of_shards: 1
   index.number_of_replicas: 0

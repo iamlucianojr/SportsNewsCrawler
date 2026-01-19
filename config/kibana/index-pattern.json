@@ -1,0 +1,6 @@
+{
+    "attributes": {
+        "title": "filebeat-*",
+        "timeFieldName": "@timestamp"
+    }
+}

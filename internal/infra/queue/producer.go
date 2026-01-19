@@ -45,6 +45,28 @@ func (p *KafkaProducer) Publish(ctx context.Context, article *domain.Article) er
 	return nil
 }
 
+func (p *KafkaProducer) PublishBatch(ctx context.Context, articles []domain.Article) error {
+	msgs := make([]kafka.Message, len(articles))
+	for i, article := range articles {
+		payload, err := json.Marshal(article)
+		if err != nil {
+			return err
+		}
+		msgs[i] = kafka.Message{
+			Key:   []byte(article.ID),
+			Value: payload,
+		}
+	}
+
+	if err := p.writer.WriteMessages(ctx, msgs...); err != nil {
+		slog.Error("Failed to write batch to kafka", "error", err, "count", len(msgs))
+		return err
+	}
+
+	slog.Debug("Published batch to Kafka", "count", len(articles))
+	return nil
+}
+
 func (p *KafkaProducer) Close() error {
 	return p.writer.Close()
 }

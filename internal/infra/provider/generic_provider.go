@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/SportsNewsCrawler/internal/domain"
+	"github.com/SportsNewsCrawler/pkg/config"
 	"github.com/sony/gobreaker"
 )
 
@@ -17,10 +18,11 @@ type GenericProvider struct {
 	url         string
 	client      *http.Client
 	transformer domain.Transformer
+	pagination  config.PaginationConfig
 	cb          *gobreaker.CircuitBreaker
 }
 
-func NewGenericProvider(name, url string, transformer domain.Transformer) *GenericProvider {
+func NewGenericProvider(name, url string, transformer domain.Transformer, pagination config.PaginationConfig) *GenericProvider {
 	cbSettings := gobreaker.Settings{
 		Name:        name,
 		MaxRequests: 1,
@@ -42,6 +44,7 @@ func NewGenericProvider(name, url string, transformer domain.Transformer) *Gener
 			Timeout: 10 * time.Second,
 		},
 		transformer: transformer,
+		pagination:  pagination,
 		cb:          gobreaker.NewCircuitBreaker(cbSettings),
 	}
 }
@@ -50,27 +53,37 @@ func (p *GenericProvider) GetName() string {
 	return p.name
 }
 
-func (p *GenericProvider) FetchLatest(ctx context.Context, limit int) ([]domain.Article, error) {
-	var allArticles []domain.Article
+const maxSafetyPages = 1000
+
+func (p *GenericProvider) Crawl(ctx context.Context, handler func([]domain.Article) error) error {
+	slog.Debug("Starting streaming crawl", "provider", p.name)
+
+	if err := p.crawlLoop(ctx, handler); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (p *GenericProvider) crawlLoop(ctx context.Context, handler func([]domain.Article) error) error {
 	page := 0
-	maxPages := 10 // Safety limit to prevent infinite loops
+	numPages := -1 // Unknown initially
 
-	slog.Debug("Starting paginated fetch", "provider", p.name, "limit", limit)
+	for page < maxSafetyPages {
+		// Stop if we know the total pages and have reached it
+		if numPages != -1 && page >= numPages {
+			slog.Debug("Reached total pages", "provider", p.name, "page", page, "total_pages", numPages)
+			break
+		}
 
-	for page < maxPages && len(allArticles) < limit {
 		// Build URL with page parameter
 		pageURL := p.buildURLWithPage(page)
 
 		// Fetch single page
-		articles, hasMore, err := p.fetchSinglePage(ctx, pageURL, page)
+		articles, pageInfo, err := p.fetchSinglePage(ctx, pageURL, page)
 		if err != nil {
-			// Log error but don't fail completely if we have some articles
-			if len(allArticles) > 0 {
-				slog.Warn("Error fetching page, returning partial results",
-					"provider", p.name, "page", page, "error", err, "articles_collected", len(allArticles))
-				break
-			}
-			return nil, err
+			slog.Error("Error fetching page, stopping crawl", "provider", p.name, "page", page, "error", err)
+			return err
 		}
 
 		if len(articles) == 0 {
@@ -78,52 +91,69 @@ func (p *GenericProvider) FetchLatest(ctx context.Context, limit int) ([]domain.
 			break
 		}
 
-		allArticles = append(allArticles, articles...)
+		// Process batch immediately via handler
+		if err := handler(articles); err != nil {
+			slog.Error("Handler failed, stopping crawl", "provider", p.name, "page", page, "error", err)
+			return err
+		}
 
-		slog.Info("Fetched page",
+		slog.Info("Processed page",
 			"provider", p.name,
 			"page", page,
-			"articles_on_page", len(articles),
-			"total_articles", len(allArticles))
+			"articles_count", len(articles))
 
-		// Stop if API indicates no more pages
-		if !hasMore {
-			slog.Debug("No more pages available", "provider", p.name, "page", page)
-			break
+		// Update numPages from metadata if available
+		// PageInfo tracks the state of pagination from the transformer
+		if pageInfo != nil {
+			numPages = pageInfo.NumPages
 		}
 
 		page++
 	}
 
-	if page >= maxPages {
-		slog.Warn("Reached max pages limit", "provider", p.name, "max_pages", maxPages)
+	if page >= maxSafetyPages {
+		slog.Warn("Reached max safety pages limit", "provider", p.name, "max_pages", maxSafetyPages)
 	}
 
-	// Apply limit
-	if len(allArticles) > limit {
-		slog.Debug("Applying limit", "provider", p.name, "fetched", len(allArticles), "limit", limit)
-		return allArticles[:limit], nil
-	}
-
-	return allArticles, nil
+	return nil
 }
 
 func (p *GenericProvider) buildURLWithPage(page int) string {
-	// If URL already has query params, add page parameter
-	if page == 0 {
-		return p.url // Use original URL for first page
-	}
-
-	// Add page parameter
+	reqURL := p.url
 	separator := "?"
-	if len(p.url) > 0 && (p.url[len(p.url)-1:] == "?" || contains(p.url, "?")) {
+	if len(reqURL) > 0 && (reqURL[len(reqURL)-1:] == "?" || contains(reqURL, "?")) {
 		separator = "&"
 	}
 
-	return fmt.Sprintf("%s%spage=%d", p.url, separator, page)
+	pageParam := "page"
+	if p.pagination.PageParam != "" {
+		pageParam = p.pagination.PageParam
+	}
+
+	limitParam := "pageSize"
+	if p.pagination.LimitParam != "" {
+		limitParam = p.pagination.LimitParam
+	}
+
+	defaultLimit := 20
+	if p.pagination.DefaultLimit > 0 {
+		defaultLimit = p.pagination.DefaultLimit
+	}
+
+	var params string
+	if p.pagination.Type == "offset" {
+		offset := page * defaultLimit
+		params = fmt.Sprintf("%s=%d&%s=%d", pageParam, offset, limitParam, defaultLimit)
+	} else {
+		// Default to "page" type (0-indexed or 1-indexed? Assuming 0-indexed for now to match previous logic)
+		// But usually page APIs start at 0 or 1. Let's stick to 0 for now as it was before.
+		params = fmt.Sprintf("%s=%d&%s=%d", pageParam, page, limitParam, defaultLimit)
+	}
+
+	return fmt.Sprintf("%s%s%s", reqURL, separator, params)
 }
 
-func (p *GenericProvider) fetchSinglePage(ctx context.Context, url string, page int) ([]domain.Article, bool, error) {
+func (p *GenericProvider) fetchSinglePage(ctx context.Context, url string, page int) ([]domain.Article, *domain.PageInfo, error) {
 	var body io.ReadCloser
 	var err error
 
@@ -132,7 +162,7 @@ func (p *GenericProvider) fetchSinglePage(ctx context.Context, url string, page 
 	backoff := 500 * time.Millisecond
 
 	// Execute with Circuit Breaker and Retries
-	_, err = p.cb.Execute(func() (interface{}, error) {
+	val, err := p.cb.Execute(func() (interface{}, error) {
 		for i := 0; i <= maxRetries; i++ {
 			if i > 0 {
 				slog.Info("Retrying request", "provider", p.name, "page", page, "attempt", i, "max_retries", maxRetries)
@@ -173,16 +203,17 @@ func (p *GenericProvider) fetchSinglePage(ctx context.Context, url string, page 
 				return nil, fmt.Errorf("provider %s returned status %d", p.name, resp.StatusCode)
 			}
 
-			// Success
-			body = resp.Body
-			return nil, nil
+			// Success - return body to be closed outside
+			return resp.Body, nil
 		}
 		return nil, fmt.Errorf("max retries exceeded")
 	})
 
 	if err != nil {
-		return nil, false, fmt.Errorf("circuit breaker execute failed: %w", err)
+		return nil, nil, fmt.Errorf("circuit breaker execute failed: %w", err)
 	}
+
+	body = val.(io.ReadCloser)
 	defer func() {
 		if err := body.Close(); err != nil {
 			slog.Warn("Failed to close response body", "error", err)
@@ -190,16 +221,12 @@ func (p *GenericProvider) fetchSinglePage(ctx context.Context, url string, page 
 	}()
 
 	// Transform
-	articles, err := p.transformer.Transform(body)
+	articles, pageInfo, err := p.transformer.Transform(body)
 	if err != nil {
-		return nil, false, fmt.Errorf("failed to transform articles from %s: %w", p.name, err)
+		return nil, nil, fmt.Errorf("failed to transform articles from %s: %w", p.name, err)
 	}
 
-	// Assume more pages exist if we got a full page
-	// This is a heuristic; ideally we'd parse pageInfo from response
-	hasMore := len(articles) > 0
-
-	return articles, hasMore, nil
+	return articles, pageInfo, nil
 }
 
 func contains(s, substr string) bool {

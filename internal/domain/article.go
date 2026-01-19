@@ -58,13 +58,14 @@ type Repository interface {
 
 // Provider defines the interface for external news feed providers.
 type Provider interface {
-	FetchLatest(ctx context.Context, limit int) ([]Article, error)
+	Crawl(ctx context.Context, handler func([]Article) error) error
 	GetName() string
 }
 
 // EventProducer publishes article events to a queue.
 type EventProducer interface {
 	Publish(ctx context.Context, article *Article) error
+	PublishBatch(ctx context.Context, articles []Article) error
 	Close() error
 }
 
