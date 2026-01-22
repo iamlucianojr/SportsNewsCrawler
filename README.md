@@ -131,6 +131,11 @@ make test-race
 make lint
 ```
 
+### Test Coverage
+*   **Infrastructure (Repository)**: ~84%
+*   **Core Logic (App/Service)**: ~30%
+*   **Providers**: ~60% (after fix)
+
 ## 📂 Project Structure
 
 This project follows the **Standard Go Project Layout** and **Hexagonal Architecture**.

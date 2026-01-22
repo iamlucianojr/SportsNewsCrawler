@@ -6,152 +6,91 @@ import (
 	"time"
 
 	"github.com/SportsNewsCrawler/internal/domain"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
 
 // Mocks
-type MockRepository struct {
+type MockRepo struct {
 	mock.Mock
-	articles map[string]domain.Article
 }
 
-// Ensure MockRepository implements Repoisitory
-var _ domain.Repository = (*MockRepository)(nil)
+func (m *MockRepo) GetContentHashes(ctx context.Context, ids []string) (map[string]string, error) {
+	args := m.Called(ctx, ids)
+	return args.Get(0).(map[string]string), args.Error(1)
+}
 
-func (m *MockRepository) Upsert(ctx context.Context, article *domain.Article) error {
-	if m.articles == nil {
-		m.articles = make(map[string]domain.Article)
-	}
-	m.articles[article.ID] = *article
-	args := m.Called(ctx, article)
+func (m *MockRepo) BulkUpsert(ctx context.Context, articles []domain.Article) error {
+	args := m.Called(ctx, articles)
 	return args.Error(0)
 }
 
-func (m *MockRepository) GetLastFetched(ctx context.Context, source string) (*domain.Article, error) {
-	args := m.Called(ctx, source)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).(*domain.Article), args.Error(1)
+func (m *MockRepo) GetLastFetched(ctx context.Context, source string) (*domain.Article, error) {
+	return nil, nil
 }
+func (m *MockRepo) Upsert(ctx context.Context, article *domain.Article) error { return nil }
+
+
+type MockProducer struct {
+	mock.Mock
+}
+
+func (m *MockProducer) PublishBatch(ctx context.Context, articles []domain.Article) error {
+	args := m.Called(ctx, articles)
+	return args.Error(0)
+}
+func (m *MockProducer) Publish(ctx context.Context, article *domain.Article) error { return nil }
+func (m *MockProducer) Close() error { return nil }
 
 type MockProvider struct {
 	mock.Mock
 }
-
 func (m *MockProvider) Crawl(ctx context.Context, handler func([]domain.Article) error) error {
-	args := m.Called(ctx, handler)
-
-	// If only error is returned (len 1), return it directly
-	if len(args) == 1 {
-		return args.Error(0)
-	}
-
-	// Simulate crawl by calling handler with mocked articles if provided as first arg
-	if articles := args.Get(0); articles != nil {
-		if err := handler(articles.([]domain.Article)); err != nil {
-			return err
-		}
-	}
-	return args.Error(1)
+	// Not used in unit test of processBatch
+	return nil 
 }
+func (m *MockProvider) GetName() string { return "test-provider" }
 
-func (m *MockProvider) GetName() string {
-	return "mock"
-}
-
-func (m *MockRepository) BulkUpsert(ctx context.Context, articles []domain.Article) error {
-	if m.articles == nil {
-		m.articles = make(map[string]domain.Article)
-	}
-	for _, a := range articles {
-		m.articles[a.ID] = a
-	}
-	args := m.Called(ctx, articles)
-	return args.Error(0)
-}
-
-func (m *MockRepository) GetContentHashes(ctx context.Context, ids []string) (map[string]string, error) {
-	hashes := make(map[string]string)
-	if m.articles != nil {
-		for _, id := range ids {
-			if a, exists := m.articles[id]; exists {
-				hashes[id] = a.ContentHash
-			}
-		}
-	}
-
-	args := m.Called(ctx, ids)
-	// Return the mocked return values if provided, otherwise use the real map logic?
-	// Usually mocks return what we tell them.
-	// But here I'm using hybrid. Let's rely on args if present, or just use the map logic for "real" behavior in tests
-	// typically mocks just return args.
-	// The implementation plan implies using the hash check logic *in the service*.
-	// The MockRepository just needs to return what we expect.
-	if len(args) > 0 {
-		return args.Get(0).(map[string]string), args.Error(1)
-	}
-	return hashes, nil
-}
-
-type MockEventProducer struct {
-	mock.Mock
-}
-
-func (m *MockEventProducer) Publish(ctx context.Context, article *domain.Article) error {
-	args := m.Called(ctx, article)
-	return args.Error(0)
-}
-
-func (m *MockEventProducer) PublishBatch(ctx context.Context, articles []domain.Article) error {
-	args := m.Called(ctx, articles)
-	return args.Error(0)
-}
-
-func (m *MockEventProducer) Close() error {
-	args := m.Called()
-	return args.Error(0)
-}
-
-func TestNewsCrawlerService_FetchAndProcess(t *testing.T) {
-	repo := new(MockRepository)
+// Test Service logic
+func TestNewsCrawlerService_Deduplication(t *testing.T) {
+	repo := new(MockRepo)
+	producer := new(MockProducer)
 	provider := new(MockProvider)
-	producer := new(MockEventProducer)
 
-	article := domain.Article{ID: "mock_1", Source: "mock", Title: "Test"}
+	service := NewNewsCrawlerService(repo, []domain.Provider{provider}, producer, time.Minute, 10, 1)
 
-	// provider.On("FetchLatest", mock.Anything, 10).Return([]domain.Article{article}, nil)
-	// New: Mock Crawl to invoke the handler
-	provider.On("Crawl", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
-		handler := args.Get(1).(func([]domain.Article) error)
-		_ = handler([]domain.Article{article})
-	}).Return(nil)
+	// Article 1: New
+	// Article 2: Changed
+	// Article 3: Unchanged
+	
+	a1 := domain.Article{ID: "1", Title: "New", Source: "test", URL: "u1"}
+	a2 := domain.Article{ID: "2", Title: "Changed", Source: "test", URL: "u2"}
+	a3 := domain.Article{ID: "3", Title: "Same", Source: "test", URL: "u3"}
 
-	provider.On("GetName").Return("mock").Maybe()
+	a1.ContentHash = a1.ComputeHash()
+	a2.ContentHash = a2.ComputeHash()
+	a3.ContentHash = a3.ComputeHash()
 
-	// Expect GetContentHashes call - return empty map to simulate new article (triggering publish)
-	repo.On("GetContentHashes", mock.Anything, []string{"mock_1"}).Return(map[string]string{}, nil)
+	existingHashes := map[string]string{
+		"2": "old_hash",
+		"3": a3.ContentHash, // Matches current
+	}
 
-	// The repo now calls BulkUpsert
-	// Note: article passed to BulkUpsert will have ContentHash set now, so we can't match exact 'article' struct unless we set hash on it too.
-	// But mock.Anything or matching loosely helps.
-	// Or we update article local var to have the hash that generateHash produces.
-	// article.ContentHash = "Test|mock|0001-01-01 00:00:00 +0000 UTC" (default string for zero time)
-	// Safest is to use mock.Anything for the slice arg or ignore exact match.
-	// But let's try to be precise if possible or loose if hard.
-	repo.On("BulkUpsert", mock.Anything, mock.Anything).Return(nil)
+	repo.On("GetContentHashes", mock.Anything, []string{"1", "2", "3"}).Return(existingHashes, nil)
+	repo.On("BulkUpsert", mock.Anything, mock.MatchedBy(func(articles []domain.Article) bool {
+		return len(articles) == 3 // Should upsert all
+	})).Return(nil)
+	
+	// Expect only 1 and 2 to be published
+	producer.On("PublishBatch", mock.Anything, mock.MatchedBy(func(articles []domain.Article) bool {
+		if len(articles) != 2 { return false }
+		ids := map[string]bool{articles[0].ID: true, articles[1].ID: true}
+		return ids["1"] && ids["2"] && !ids["3"]
+	})).Return(nil)
 
-	// The service now calls PublishBatch
-	producer.On("PublishBatch", mock.Anything, mock.Anything).Return(nil)
+	err := service.processBatch(context.Background(), provider, []domain.Article{a1, a2, a3})
 
-	// New constructor signature
-	svc := NewNewsCrawlerService(repo, []domain.Provider{provider}, producer, 1*time.Second, 10, 5)
-
-	// Since fetchAndProcess is replaced by persistent loops, we test processProvider directly
-	// to verify the logic of fetching, deduplicating, UPSERTing, and publishing.
-	svc.processProvider(context.Background(), provider)
-
-	provider.AssertExpectations(t)
+	assert.NoError(t, err)
 	repo.AssertExpectations(t)
 	producer.AssertExpectations(t)
 }
