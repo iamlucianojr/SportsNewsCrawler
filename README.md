@@ -39,6 +39,15 @@ graph TD
     WorkerPool -.->|Logs| Elastic
 ```
 
+### Data Ingestion Flow
+
+1.  **Fetch**: The crawler iterates through configured providers, handling pagination (both page-based and offset-based) to retrieve article batches.
+2.  **Normalize**: Raw payloads are transformed into a unified `domain.Article` structure.
+3.  **Deduplicate**: A SHA-256 hash is generated for each article. The system checks MongoDB to see if the hash has changed or if the article is new.
+4.  **Persist**: New or updated articles are bulk-upserted into MongoDB.
+5.  **Sync**: Successfully persisted articles are published to a Kafka topic.
+6.  **Consume**: A separate service (or external consumers) listens to Kafka to sync data to downstream systems (e.g., CMS).
+
 ### Key Features
 
 *   **Multi-Provider Support**: Concurrent crawling of multiple news sources using a worker pool pattern.
@@ -50,6 +59,7 @@ graph TD
     *   **Logs**: Structured JSON logging routed to Elasticsearch and visualized in Kibana.
     *   **Dashboards**: Pre-provisioned Grafana dashboards.
 *   **Resilience**: Graceful shutdown, context-aware cancellation, and timeout management.
+*   **Robust Error Handling**: Implements a "continue-on-error" strategy for crawling loops, ensuring that partial failures in one batch (e.g., a single invalid article) do not stop the ingestion of subsequent pages, while still protecting against persistent outages via circuit breaking.
 *   **Containerized**: Fully Docker-ized environment with Docker Compose for local development and Kubernetes manifests for deployment.
 
 ## 🛠 Tech Stack
@@ -184,10 +194,11 @@ make docker-build
 *   **Deduplication Strategy**: We generate a SHA-256 hash of the article's core content (Title, Body, Source, URL) to detect changes. This allows us to update existing articles if their content changes while ignoring redundant fetches, verifying data integrity without complex database lookups.
 *   **Dual-Write Potential**: Currently, the service writes to MongoDB and then publishes to Kafka. In a partial failure scenario (DB success, Kafka fail), there could be inconsistency. A future improvement would be implementing the **Transactional Outbox Pattern** to guarantee specific eventual consistency.
 *   **Concurrency**: A worker pool model is used to limit the number of concurrent processing routines, protecting system resources while allowing multiple providers to be crawled in parallel.
+*   **Partial Failure Handling**: In a batch processing system, "poison pill" data can often halt an entire pipeline. We chose a robust approach where individual batch failures are logged (and counted) but do not immediately abort the crawl loop. A threshold for *consecutive* errors safeguards against total system failure (e.g., database down), balancing data completeness with operational safety.
 
 ## 🗺️ Roadmap
 
-*   [ ] **Kubernetes Deployment**: Create `k8s/` manifests (Deployment, Service, ConfigMap) to fully utilize the existing `Makefile` targets.
+*   [ ] **Kubernetes Deployment**: Create `k8s` manifests (Deployment, Service, ConfigMap) to deploy the application to a Kubernetes cluster.
 *   [ ] **Dynamic Configuration**: Move provider config to a database/API to allow adding sources without restarts.
 *   [ ] **Rate Limiting**: Implement per-domain rate limiting to respect provider `robots.txt` and API limits.
 *   [ ] **Dead Letter Queue (DLQ)**: Automated replay mechanisms for failed message publishing.
