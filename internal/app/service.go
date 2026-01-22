@@ -2,8 +2,6 @@ package app
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -172,7 +170,7 @@ func (s *NewsCrawlerService) processBatch(ctx context.Context, provider domain.P
 	// 1. Calculate Hashes
 	var ids []string
 	for i := range articles {
-		articles[i].ContentHash = generateHash(&articles[i])
+		articles[i].ContentHash = articles[i].ComputeHash()
 		ids = append(ids, articles[i].ID)
 	}
 
@@ -242,14 +240,4 @@ func (s *NewsCrawlerService) processBatch(ctx context.Context, provider domain.P
 	return nil
 }
 
-func generateHash(a *domain.Article) string {
-	// Use SHA256 of content fields to detect changes
-	// Exclude timestamps to detect content changes only
-	hasher := sha256.New()
-	hasher.Write([]byte(a.Source))
-	hasher.Write([]byte(a.URL))
-	hasher.Write([]byte(a.Title))
-	hasher.Write([]byte(a.Summary))
-	hasher.Write([]byte(a.Body))
-	return hex.EncodeToString(hasher.Sum(nil))
-}
+

@@ -172,14 +172,32 @@ func (p *GenericProvider) buildURLWithPage(page int) string {
 }
 
 func (p *GenericProvider) fetchSinglePage(ctx context.Context, url string, page int) ([]domain.Article, *domain.PageInfo, error) {
-	var body io.ReadCloser
-	var err error
+	// Execute Request with Retries and Circuit Breaker
+	body, err := p.executeRequest(ctx, url, page)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() {
+		if err := body.Close(); err != nil {
+			slog.Warn("Failed to close response body", "error", err)
+		}
+	}()
 
-	// Retry configuration
+	// Transform
+	articles, pageInfo, err := p.transformer.Transform(body)
+	if err != nil {
+		// Record parse error
+		metrics.ParseErrors.WithLabelValues(p.name).Inc()
+		return nil, nil, fmt.Errorf("failed to transform articles from %s: %w", p.name, err)
+	}
+
+	return articles, pageInfo, nil
+}
+
+func (p *GenericProvider) executeRequest(ctx context.Context, url string, page int) (io.ReadCloser, error) {
 	maxRetries := 3
 	backoff := 500 * time.Millisecond
 
-	// Execute with Circuit Breaker and Retries
 	val, err := p.cb.Execute(func() (interface{}, error) {
 		for i := 0; i <= maxRetries; i++ {
 			if i > 0 {
@@ -229,26 +247,10 @@ func (p *GenericProvider) fetchSinglePage(ctx context.Context, url string, page 
 	})
 
 	if err != nil {
-		return nil, nil, fmt.Errorf("circuit breaker execute failed: %w", err)
+		return nil, fmt.Errorf("circuit breaker execute failed: %w", err)
 	}
 
-	body = val.(io.ReadCloser)
-	defer func() {
-		if err := body.Close(); err != nil {
-			slog.Warn("Failed to close response body", "error", err)
-		}
-	}()
-
-	// Transform
-	articles, pageInfo, err := p.transformer.Transform(body)
-	if err != nil {
-		// Record parse error
-		// We need to import the metrics package
-		metrics.ParseErrors.WithLabelValues(p.name).Inc()
-		return nil, nil, fmt.Errorf("failed to transform articles from %s: %w", p.name, err)
-	}
-
-	return articles, pageInfo, nil
+	return val.(io.ReadCloser), nil
 }
 
 func contains(s, substr string) bool {

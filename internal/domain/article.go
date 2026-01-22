@@ -2,6 +2,8 @@ package domain
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"time"
 )
 
@@ -23,6 +25,18 @@ type Article struct {
 	UpdatedAt   time.Time `json:"updated_at" bson:"updated_at"`
 	FetchedAt   time.Time `json:"fetched_at" bson:"fetched_at"`
 	ContentHash string    `json:"content_hash" bson:"content_hash"` // New field for deduplication
+}
+
+// ComputeHash generates a deterministic hash of the article's content.
+// It includes Source, URL, Title, Summary, and Body to detect "New Content" vs "Update Same Content".
+func (a *Article) ComputeHash() string {
+	hasher := sha256.New()
+	hasher.Write([]byte(a.Source))
+	hasher.Write([]byte(a.URL))
+	hasher.Write([]byte(a.Title))
+	hasher.Write([]byte(a.Summary))
+	hasher.Write([]byte(a.Body))
+	return hex.EncodeToString(hasher.Sum(nil))
 }
 
 // Tag represents a content tag/category.
