@@ -88,6 +88,8 @@ func (p *GenericProvider) Crawl(ctx context.Context, handler func([]domain.Artic
 func (p *GenericProvider) crawlLoop(ctx context.Context, handler func([]domain.Article) error) error {
 	page := 0
 	numPages := -1 // Unknown initially
+	consecutiveErrors := 0
+	const maxConsecutiveErrors = 5
 
 	for page < maxSafetyPages {
 		// Stop if we know the total pages and have reached it
@@ -113,14 +115,18 @@ func (p *GenericProvider) crawlLoop(ctx context.Context, handler func([]domain.A
 
 		// Process batch immediately via handler
 		if err := handler(articles); err != nil {
-			slog.Error("Handler failed, stopping crawl", "provider", p.name, "page", page, "error", err)
-			return err
+			slog.Error("Handler failed (continuing)", "provider", p.name, "page", page, "error", err)
+			consecutiveErrors++
+			if consecutiveErrors >= maxConsecutiveErrors {
+				return fmt.Errorf("too many consecutive handler errors (%d): %w", consecutiveErrors, err)
+			}
+		} else {
+			consecutiveErrors = 0
+			slog.Info("Processed page",
+				"provider", p.name,
+				"page", page,
+				"articles_count", len(articles))
 		}
-
-		slog.Info("Processed page",
-			"provider", p.name,
-			"page", page,
-			"articles_count", len(articles))
 
 		// Update numPages from metadata if available
 		// PageInfo tracks the state of pagination from the transformer
