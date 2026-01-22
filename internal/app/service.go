@@ -98,9 +98,7 @@ func (s *NewsCrawlerService) runProviderLoop(ctx context.Context, p domain.Provi
 			return
 		case <-ticker.C:
 			select {
-			// Non-blocking push if channel full? Or blocking?
-			// Blocking is safer for backpressure, but if workers are stuck, all providers stick.
-			// Given buffer, blocking is fine.
+			// Block if channel is full to ensure backpressure
 			case s.jobs <- job{provider: p}:
 			case <-ctx.Done():
 				return
@@ -113,7 +111,7 @@ func (s *NewsCrawlerService) worker(ctx context.Context, id int) {
 	defer s.wg.Done()
 	slog.Info("Worker started", "worker_id", id)
 
-	// Range over channel handles closing correctly: exits loop when closed and empty
+	// Process jobs until channel is closed and empty
 	for j := range s.jobs {
 		// Prevent concurrent processing of the same provider
 		name := j.provider.GetName()
@@ -246,7 +244,7 @@ func (s *NewsCrawlerService) processBatch(ctx context.Context, provider domain.P
 
 func generateHash(a *domain.Article) string {
 	// Use SHA256 of content fields to detect changes
-	// We include Title, Summary, Body, Source, and URL. Intentionally exclude PublishedAt/FetchedAt to detect "Update Same Content" vs "New Content"
+	// Exclude timestamps to detect content changes only
 	hasher := sha256.New()
 	hasher.Write([]byte(a.Source))
 	hasher.Write([]byte(a.URL))

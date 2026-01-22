@@ -45,14 +45,7 @@ func NewGenericProvider(name, url string, transformer domain.Transformer, pagina
 			case gobreaker.StateOpen:
 				stateVal = 2
 			}
-			// Use the global metrics package.
-			// Note: This creates a tight coupling to the global metrics package which is fine for this app
-			// but explicitly passing a metrics recorder would be cleaner for libraries.
-			// Since we can't easily change the constructor signature to accept one without breaking changes,
-			// we are importing metrics directly here.
-			// However, we need to import "github.com/SportsNewsCrawler/internal/infra/metrics"
-			// which might cause an import cycle if not careful (provider -> metrics).
-			// Let's check imports. metrics package has no deps, so it's safe.
+			// Update global metrics directly to maintain constructor signature
 			metrics.CircuitBreakerState.WithLabelValues(name).Set(stateVal)
 		},
 	}
@@ -171,8 +164,7 @@ func (p *GenericProvider) buildURLWithPage(page int) string {
 		offset := page * defaultLimit
 		params = fmt.Sprintf("%s=%d&%s=%d", pageParam, offset, limitParam, defaultLimit)
 	} else {
-		// Default to "page" type (0-indexed or 1-indexed? Assuming 0-indexed for now to match previous logic)
-		// But usually page APIs start at 0 or 1. Let's stick to 0 for now as it was before.
+		// Use 0-indexed pagination
 		params = fmt.Sprintf("%s=%d&%s=%d", pageParam, page, limitParam, defaultLimit)
 	}
 
@@ -226,11 +218,11 @@ func (p *GenericProvider) fetchSinglePage(ctx context.Context, url string, page 
 				if err := resp.Body.Close(); err != nil {
 					slog.Warn("Failed to close response body", "error", err)
 				}
-				// Don't retry on 4xx (client error), just fail
+				// Fail immediately on client errors
 				return nil, fmt.Errorf("provider %s returned status %d", p.name, resp.StatusCode)
 			}
 
-			// Success - return body to be closed outside
+			// Return response body for caller to close
 			return resp.Body, nil
 		}
 		return nil, fmt.Errorf("max retries exceeded")
