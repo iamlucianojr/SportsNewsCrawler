@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/SportsNewsCrawler/internal/domain"
@@ -60,7 +61,7 @@ func NewGenericProvider(name, url string, transformer domain.Transformer, pagina
 		name: name,
 		url:  url,
 		client: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: 30 * time.Second,
 		},
 		transformer: transformer,
 		pagination:  pagination,
@@ -194,6 +195,7 @@ func (p *GenericProvider) fetchSinglePage(ctx context.Context, url string, page 
 			}
 
 			// Actual HTTP Request
+			slog.Info("Fetching URL", "url", url)
 			req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 			if reqErr != nil {
 				return nil, fmt.Errorf("failed to create request: %w", reqErr)
@@ -252,6 +254,5 @@ func (p *GenericProvider) fetchSinglePage(ctx context.Context, url string, page 
 }
 
 func contains(s, substr string) bool {
-	return len(s) >= len(substr) && s[:len(substr)] == substr ||
-		(len(s) > len(substr) && s[1:len(substr)+1] == substr)
+	return strings.Contains(s, substr)
 }

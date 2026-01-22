@@ -178,6 +178,8 @@ func (s *NewsCrawlerService) processBatch(ctx context.Context, provider domain.P
 		ids = append(ids, articles[i].ID)
 	}
 
+	slog.Info("Processing batch", "provider", provider.GetName(), "batch_size", len(articles))
+
 	// 2. Fetch Existing Hashes
 	existingHashes, err := s.repo.GetContentHashes(ctx, ids)
 	if err != nil {
@@ -244,8 +246,7 @@ func (s *NewsCrawlerService) processBatch(ctx context.Context, provider domain.P
 
 func generateHash(a *domain.Article) string {
 	// Use SHA256 of content fields to detect changes
-	// We include Title, Summary, Body, Source, and URL.
-	// We intentionally exclude PublishedAt/FetchedAt to detect "Update Same Content" vs "New Content"
+	// We include Title, Summary, Body, Source, and URL. Intentionally exclude PublishedAt/FetchedAt to detect "Update Same Content" vs "New Content"
 	hasher := sha256.New()
 	hasher.Write([]byte(a.Source))
 	hasher.Write([]byte(a.URL))
