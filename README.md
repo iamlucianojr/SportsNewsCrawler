@@ -68,7 +68,7 @@ graph TD
 *   **Storage**: MongoDB
 *   **Messaging**: Kafka (with Zookeeper)
 *   **Observability**: Prometheus, Grafana, Jaeger, Elasticsearch, Kibana (EFK Stack)
-*   **Infrastructure**: Docker, Kubernetes (Manifests included)
+*   **Infrastructure**: Docker
 
 ## 🏁 Getting Started
 
@@ -134,7 +134,7 @@ make lint
 ### Test Coverage
 *   **Infrastructure (Repository)**: ~84%
 *   **Core Logic (App/Service)**: ~30%
-*   **Providers**: ~60% (after fix)
+*   **Providers**: ~60%
 
 ## 📂 Project Structure
 
